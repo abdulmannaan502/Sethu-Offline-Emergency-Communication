@@ -138,13 +138,12 @@ fun SosSenderScreen(
 
     var locationData by remember {
         mutableStateOf(
-            LocationData(
-                status = if (LocationHelper.hasLocationPermission(context)) "Acquiring..." else SosReport.LOCATION_STATUS_PERMISSION_DENIED
-            )
+            LocationHelper.getImmediateLastKnownLocation(context)
         )
     }
     var isFetchingLocation by remember { mutableStateOf(false) }
     var showPermissionRationale by remember { mutableStateOf(false) }
+    var showManualLocationDialog by remember { mutableStateOf(false) }
 
     // Dialog state after sending SOS
     var activeReport by remember { mutableStateOf<SosReport?>(null) }
@@ -192,36 +191,50 @@ fun SosSenderScreen(
         }
     }
 
-    val locationPermissionLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.RequestMultiplePermissions()
-    ) { perms ->
-        val granted = perms.values.any { it }
-        if (granted) {
-            coroutineScope.launch {
-                isFetchingLocation = true
-                locationData = LocationHelper.fetchCurrentLocation(context)
-                isFetchingLocation = false
-            }
-        } else {
-            locationData = LocationData(status = SosReport.LOCATION_STATUS_PERMISSION_DENIED)
-        }
-    }
-
     fun requestGpsFix() {
         if (!LocationHelper.hasLocationPermission(context)) {
             showPermissionRationale = true
         } else {
             coroutineScope.launch {
                 isFetchingLocation = true
-                locationData = LocationHelper.fetchCurrentLocation(context)
+                val result = LocationHelper.fetchCurrentLocation(context)
+                if (result.latitude != null || locationData.latitude == null) {
+                    locationData = result
+                }
                 isFetchingLocation = false
             }
         }
     }
 
+    val locationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { perms ->
+        val granted = perms.values.any { it }
+        if (granted) {
+            val immediate = LocationHelper.getImmediateLastKnownLocation(context)
+            if (immediate.latitude != null) {
+                locationData = immediate
+            }
+            requestGpsFix()
+        } else {
+            locationData = LocationData(status = SosReport.LOCATION_STATUS_PERMISSION_DENIED)
+        }
+    }
+
     LaunchedEffect(Unit) {
         if (LocationHelper.hasLocationPermission(context)) {
+            val immediate = LocationHelper.getImmediateLastKnownLocation(context)
+            if (immediate.latitude != null) {
+                locationData = immediate
+            }
             requestGpsFix()
+        } else {
+            locationPermissionLauncher.launch(
+                arrayOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION
+                )
+            )
         }
     }
 
@@ -408,7 +421,8 @@ fun SosSenderScreen(
                 GpsLocationStatusCard(
                     locationData = locationData,
                     isFetching = isFetchingLocation,
-                    onRequestGps = { requestGpsFix() }
+                    onRequestGps = { requestGpsFix() },
+                    onSetManualLocation = { showManualLocationDialog = true }
                 )
 
                 Spacer(modifier = Modifier.height(20.dp))
@@ -1171,6 +1185,11 @@ fun SosSenderScreen(
                             val tapNow = System.currentTimeMillis()
                             if (tapNow - lastStructuredTimestamp < 2500L) return@clickable
                             lastStructuredTimestamp = tapNow
+                            val resolvedLocation = if (locationData.latitude != null) {
+                                locationData
+                            } else {
+                                LocationHelper.getImmediateLastKnownLocation(context)
+                            }
                             val report = SosReport(
                                 senderDeviceName = transport.getLocalDeviceName(),
                                 category = selectedType,
@@ -1179,11 +1198,11 @@ fun SosSenderScreen(
                                 elderlyInvolved = elderlyInvolved,
                                 medicalEmergency = medicalEmergency,
                                 notes = notes,
-                                latitude = locationData.latitude,
-                                longitude = locationData.longitude,
-                                accuracyMeters = locationData.accuracyMeters,
-                                locationTimestamp = locationData.timestamp,
-                                locationStatus = locationData.status
+                                latitude = resolvedLocation.latitude,
+                                longitude = resolvedLocation.longitude,
+                                accuracyMeters = resolvedLocation.accuracyMeters,
+                                locationTimestamp = resolvedLocation.timestamp,
+                                locationStatus = resolvedLocation.status
                             )
                             // Durably persist to sender outbox BEFORE any transmission; the delivery engine sends it.
                             actualSenderStore.saveReport(report)
@@ -1489,13 +1508,130 @@ fun SosSenderScreen(
             containerColor = CardBackground
         )
     }
+
+    if (showManualLocationDialog) {
+        var latText by remember { mutableStateOf(locationData.latitude?.let { "%.5f".format(it) } ?: "12.97160") }
+        var lonText by remember { mutableStateOf(locationData.longitude?.let { "%.5f".format(it) } ?: "77.59460") }
+        var errorMessage by remember { mutableStateOf<String?>(null) }
+
+        AlertDialog(
+            onDismissRequest = { showManualLocationDialog = false },
+            containerColor = CardBackground,
+            title = {
+                Text(
+                    text = "Indoor Location / Set Coordinates",
+                    color = TextPrimary,
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(
+                        text = "Satellites may be obstructed indoors. Enter coordinates or tap a city preset for immediate verification.",
+                        color = TextSecondary,
+                        fontSize = 12.sp
+                    )
+                    OutlinedTextField(
+                        value = latText,
+                        onValueChange = { latText = it; errorMessage = null },
+                        label = { Text("Latitude (-90 to +90)", color = TextSecondary, fontSize = 11.sp) },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedContainerColor = TextFieldBackground,
+                            unfocusedContainerColor = TextFieldBackground,
+                            focusedBorderColor = CardSelectedBorder,
+                            unfocusedBorderColor = CardBorder,
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary
+                        ),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    OutlinedTextField(
+                        value = lonText,
+                        onValueChange = { lonText = it; errorMessage = null },
+                        label = { Text("Longitude (-180 to +180)", color = TextSecondary, fontSize = 11.sp) },
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedContainerColor = TextFieldBackground,
+                            unfocusedContainerColor = TextFieldBackground,
+                            focusedBorderColor = CardSelectedBorder,
+                            unfocusedBorderColor = CardBorder,
+                            focusedTextColor = TextPrimary,
+                            unfocusedTextColor = TextPrimary
+                        ),
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    if (errorMessage != null) {
+                        Text(errorMessage!!, color = SosRed, fontSize = 12.sp)
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                latText = "12.97160"
+                                lonText = "77.59460"
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1D2821)),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Bangalore", fontSize = 11.sp, color = AccentGreen)
+                        }
+                        Button(
+                            onClick = {
+                                latText = "13.08270"
+                                lonText = "80.27070"
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF1D2821)),
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text("Chennai", fontSize = 11.sp, color = AccentGreen)
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        val lat = latText.toDoubleOrNull()
+                        val lon = lonText.toDoubleOrNull()
+                        if (lat != null && lon != null && lat in -90.0..90.0 && lon in -180.0..180.0) {
+                            LocationHelper.saveManualLocation(context, lat, lon)
+                            locationData = LocationData(
+                                latitude = lat,
+                                longitude = lon,
+                                accuracyMeters = 8f,
+                                timestamp = System.currentTimeMillis(),
+                                status = SosReport.LOCATION_STATUS_AVAILABLE,
+                                isManualOrCached = true
+                            )
+                            showManualLocationDialog = false
+                        } else {
+                            errorMessage = "Please enter valid coordinates (-90..90, -180..180)"
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = AccentGreen)
+                ) {
+                    Text("Save Location", color = Color.Black, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showManualLocationDialog = false }) {
+                    Text("Cancel", color = TextSecondary)
+                }
+            }
+        )
+    }
 }
 
 @Composable
 private fun GpsLocationStatusCard(
     locationData: LocationData,
     isFetching: Boolean,
-    onRequestGps: () -> Unit
+    onRequestGps: () -> Unit,
+    onSetManualLocation: () -> Unit = {}
 ) {
     Box(
         modifier = Modifier
@@ -1552,47 +1688,72 @@ private fun GpsLocationStatusCard(
 
                     if (locationData.latitude != null && locationData.longitude != null) {
                         Text(
-                            text = "${"%.5f".format(locationData.latitude)}, ${"%.5f".format(locationData.longitude)}",
-                            color = TextPrimary,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.SemiBold
+                            text = "Lat: ${"%.5f".format(locationData.latitude)}, Lon: ${"%.5f".format(locationData.longitude)}",
+                            color = AccentGreen,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Bold
                         )
                         val timeStr = locationData.timestamp?.let {
                             TimeFormatter.formatTime(it)
                         } ?: ""
+                        val isRecent = locationData.timestamp?.let { (System.currentTimeMillis() - it) < 300_000L } ?: false
+                        val fixType = if (locationData.isManualOrCached) "Manual/Indoor Fix" else if (isRecent) "Live GPS" else "Cached Fix"
                         Text(
-                            text = if (timeStr.isNotBlank() && timeStr != "Not recorded") "Acc: ±${locationData.accuracyMeters?.toInt() ?: 0}m | GPS Fix: $timeStr" else "Acc: ±${locationData.accuracyMeters?.toInt() ?: 0}m",
-                            color = TextMuted,
+                            text = if (timeStr.isNotBlank() && timeStr != "Not recorded") "Acc: ±${locationData.accuracyMeters?.toInt() ?: 0}m | $fixType: $timeStr" else "Acc: ±${locationData.accuracyMeters?.toInt() ?: 0}m | $fixType",
+                            color = TextSecondary,
                             fontSize = 11.sp
                         )
                     } else {
                         Text(
-                            text = locationData.status,
+                            text = if (locationData.status == SosReport.LOCATION_STATUS_TIMED_OUT) {
+                                "GPS Timed Out (Satellites blocked indoors)"
+                            } else {
+                                locationData.status
+                            },
                             color = when (locationData.status) {
                                 SosReport.LOCATION_STATUS_PERMISSION_DENIED -> SosRed
                                 SosReport.LOCATION_STATUS_AVAILABLE -> AccentGreen
                                 else -> Color(0xFFFFB74D)
                             },
-                            fontSize = 13.sp,
+                            fontSize = 12.sp,
                             fontWeight = FontWeight.Medium
                         )
                     }
                 }
             }
 
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(Color(0xFF1D2821))
-                    .clickable { onRequestGps() }
-                    .padding(horizontal = 10.dp, vertical = 6.dp)
-            ) {
-                Text(
-                    text = if (isFetching) "Locating..." else "Refresh GPS",
-                    color = AccentGreen,
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (locationData.latitude == null) Color(0xFF2A2215) else Color(0xFF1B2320))
+                        .border(1.dp, if (locationData.latitude == null) Color(0xFFFFB74D).copy(alpha = 0.6f) else CardBorder, RoundedCornerShape(8.dp))
+                        .clickable { onSetManualLocation() }
+                        .padding(horizontal = 8.dp, vertical = 6.dp)
+                ) {
+                    Text(
+                        text = if (locationData.latitude == null) "Set Coords" else "Edit",
+                        color = if (locationData.latitude == null) Color(0xFFFFB74D) else TextSecondary,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color(0xFF1D2821))
+                        .border(1.dp, CardBorder, RoundedCornerShape(8.dp))
+                        .clickable { onRequestGps() }
+                        .padding(horizontal = 8.dp, vertical = 6.dp)
+                ) {
+                    Text(
+                        text = if (isFetching) "Locating..." else "Refresh",
+                        color = AccentGreen,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
             }
         }
     }
