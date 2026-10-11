@@ -1,0 +1,22 @@
+# Built-in Android and Gradle ignores
+*.iml
+.gradle/
+/local.properties
+/.idea/
+/.vscode/
+.DS_Store
+/build/
+/app/build/
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+
+# Kotlin tooling
+.kotlin/
+
+# Large model binaries and checkpoints (>100MB exceeds GitHub push limits)
+models/*.gguf
+models/*.gguf.tmp
+checkpoints/

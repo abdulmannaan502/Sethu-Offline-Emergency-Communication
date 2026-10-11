@@ -1,0 +1,9 @@
+[
+ "When disaster strikes, communication can fail exactly when people need it most.",
+ "Sethu is designed to help emergency reports travel between nearby devices using local Bluetooth communication, without relying on cloud services for its intended offline workflow.",
+ "The Sender sends an SOS to a nearby Relay. The Relay stores the report locally and confirms receipt.",
+ "Even when the original connection disappears, the stored report remains available for onward delivery.",
+ "When the Coordinator becomes available, the user establishes the next connection. Sethu then forwards the pending report automatically, and records delivery after the required acknowledgement.",
+ "Behind the interface are local storage, controlled message delivery, acknowledgement handling, and an offline-first architecture designed for resilience.",
+ "Sethu. When connectivity breaks, emergency communication should still have a path."
+]
